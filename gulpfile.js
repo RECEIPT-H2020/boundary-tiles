@@ -1,6 +1,7 @@
 const { series } = require("gulp");
-const shell = require("shelljs");
-shell.exec2 = require("shelljs.exec");
+// const shell = require("shelljs");
+// shell.exec2 = require("shelljs.exec");
+const { exec, spawn } = require("child_process");
 const fs = require("fs");
 const tippecanoe = require("tippecanoe");
 const mkdirp = require("mkdirp");
@@ -22,7 +23,7 @@ const tmpDir = `./tmp`; // where zip files are temporarily unzipped to
 const geojsonDir = `./geojson`; // where generated newline-delimited GeoJSON files are written
 const regionMappingDir = `./regionMapping`; // where to find and update regionmapping file and write regionids files
 const tesseraDir = `./tessera`; // where to find and update tessera_config.json
-const tileHost = `tile-test.terria.io`;
+const tileHost = `tiles.climateimpactstories.eu`;
 const testCsvDir = "./test";
 const mbtilesDir = "./mbtiles";
 
@@ -37,12 +38,15 @@ async function toGeoJSON() {
   mkdirp(geojsonDir);
   for (let bt of activeBoundaryTypes) {
     const geojsonName = `${geojsonDir}/${bt}.nd.json`;
-    shell.rm(`-f`, geojsonName);
+    exec("rm", ["-f", `${geojsonName}`]);
 
     const srcDir = `${srcDataDir}/${bt}`;
     for (let zipName of Object.keys(boundaryTypes[bt].shapeNames)) {
-      shell.rm(`-f`, `${tmpDir}/*`);
-      throwIfFailed(shell.exec(`unzip -j ${srcDir}/${zipName} -d ${tmpDir}`));
+      exec("rm -f", [`${tmpDir}/*`]);
+      exec("`unzip -j", [`${srcDir}/${zipName}`, "-d", `${tmpDir}`]);
+
+      // throwIfFailed(exec(`unzip -j ${srcDir}/${zipName} -d ${tmpDir}`));
+
       // ogr2ogr doesn't seem to work properly with `/dev/stdout`
       // .exec(...).toEnd(...) should work but truncates the file.
 
@@ -52,7 +56,10 @@ async function toGeoJSON() {
         `>> ${geojsonName}`;
 
       console.log(cmd);
-      throwIfFailed(shell.exec(cmd, { silent: true }));
+
+      exec(cmd, []);
+
+      // throwIfFailed(shell.exec(cmd, { silent: true }));
     }
   }
 }
@@ -252,46 +259,68 @@ async function deploy() {
 
   const userConfig = require("./userconfig.json");
 
-  const response = throwIfFailed(
-    shell.exec(
-      `aws sts assume-role --role-arn ${userConfig.role_arn} --role-session-name upload-tiles --profile ${userConfig.profile}`,
-      { silent: true }
-    )
-  );
-  if (response.stderr) {
-    console.error(response.stderr);
-  }
-  const creds = JSON.parse(response.stdout).Credentials;
-  if (creds) {
-    console.log("AWS Session token acquired.");
-  }
-  process.env.AWS_ACCESS_KEY_ID = creds.AccessKeyId;
-  process.env.AWS_SECRET_ACCESS_KEY = creds.SecretAccessKey;
-  process.env.AWS_SESSION_TOKEN = creds.SessionToken;
+  const response = exec("aws", [
+    "sts",
+    "assume-role",
+    "--role-arn",
+    `${userConfig.role_arn}`,
+    "--role-session-name",
+    "upload-tiles",
+    "--profile",
+    `${userConfig.profile}`,
+  ]);
+  // const response = throwIfFailed(
+  //   exec(
+  //     `aws sts assume-role --role-arn ${userConfig.role_arn} --role-session-name upload-tiles --profile ${userConfig.profile}`,
+  //     { silent: false }
+  //   )
+  // );
+  // console.log(response);
+  // if (response.stderr) {
+  //   console.error(response.stderr);
+  // } else {
+  //   console.log(response);
+  // }
 
-  // console.log(`AWS_ACCESS_KEY_ID=${process.env.AWS_ACCESS_KEY_ID}`)
-  // console.log(`AWS_SECRET_ACCESS_KEY=${process.env.AWS_SECRET_ACCESS_KEY}`);
-  // console.log(`AWS_SESSION_TOKEN=${process.env.AWS_SESSION_TOKEN}`);
+  response.stdout.on("data", (data) => {
+    const creds = JSON.parse(data).Credentials;
+    if (creds) {
+      console.log("AWS Session token acquired.");
+    }
+    process.env.AWS_ACCESS_KEY_ID = creds.AccessKeyId;
+    process.env.AWS_SECRET_ACCESS_KEY = creds.SecretAccessKey;
+    process.env.AWS_SESSION_TOKEN = creds.SessionToken;
 
-  for (let bt of activeBoundaryTypes) {
-    const tileCopy = require("@mapbox/mapbox-tile-copy");
-    console.log(""); // clear space before progress output
+    // console.log(`AWS_ACCESS_KEY_ID=${process.env.AWS_ACCESS_KEY_ID}`)
+    // console.log(`AWS_SECRET_ACCESS_KEY=${process.env.AWS_SECRET_ACCESS_KEY}`);
+    // console.log(`AWS_SESSION_TOKEN=${process.env.AWS_SESSION_TOKEN}`);
 
-    // alternative method: shell.exec(`mapbox-tile-copy  mbtiles/${bt}.mbtiles s3://tile-test.terria.io/${bt}/{z}/{x}/{y}.pbf`);
-    return new Promise((resolve, reject) =>
-      tileCopy(
-        `${mbtilesDir}/${bt}.mbtiles`,
-        `s3://${tileHost}/${bt}/{z}/{x}/{y}.pbf?timeout=20000`,
-        { progress: getProgress },
-        (d) => {
-          if (d !== undefined) {
-            console.log(d);
+    console.log(activeBoundaryTypes);
+
+    for (let bt of activeBoundaryTypes) {
+      const tileCopy = require("@mapbox/mapbox-tile-copy");
+      console.log(""); // clear space before progress output
+
+      // alternative method: shell.exec(`mapbox-tile-copy  mbtiles/${bt}.mbtiles s3://tile-test.terria.io/${bt}/{z}/{x}/{y}.pbf`);
+      return new Promise((resolve, reject) =>
+        tileCopy(
+          `${mbtilesDir}/${bt}.mbtiles`,
+          `s3://${tileHost}/${bt}/{z}/{x}/{y}.pbf?timeout=20000`,
+          { progress: getProgress },
+          (d) => {
+            if (d !== undefined) {
+              console.log(d);
+            }
+            resolve();
           }
-          resolve();
-        }
-      )
-    );
-  }
+        )
+      );
+    }
+  });
+
+  response.stderr.on("data", (data) => {
+    console.error(`stderr: ${data}`);
+  });
 }
 
 console.log("Boundary-tiles: generates vector tiles from boundary files.");
